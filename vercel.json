@@ -14,18 +14,15 @@
       }
     }
   ],
-  "routes": [
+  "rewrites": [
     {
-      "src": "/api/(.*)",
-      "dest": "/server"
+      "source": "/api/:path*",
+      "destination": "/server/:path*"
     },
     {
-      "src": "/(.*)",
-      "dest": "/client/$1"
+      "source": "/:path*",
+      "destination": "/client/:path*"
     }
-  ],
-  "rewrites": [
-    { "source": "/api/:path*", "destination": "/server/:path*" }
   ],
   "env": {
     "NODE_ENV": "production"
