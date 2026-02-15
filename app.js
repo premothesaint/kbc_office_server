@@ -94,27 +94,32 @@ app.get('/api', (req, res) => {
 
 app.get(['/health', '/api/health'], async (req, res) => {
   try {
-    const db = require('./config/database');
-    const withTimeout = (promise, ms) => {
-      return new Promise((resolve, reject) => {
-        const t = setTimeout(() => reject(new Error('DB timeout')), ms);
-        promise.then((v) => { clearTimeout(t); resolve(v); }).catch((e) => { clearTimeout(t); reject(e); });
-      });
-    };
-    await withTimeout(db.query('SELECT 1'), Number(process.env.HEALTH_DB_TIMEOUT) || 3000);
-    const [tables] = await db.query(`
-      SELECT TABLE_NAME 
-      FROM information_schema.tables 
-      WHERE TABLE_SCHEMA = ? 
-      AND TABLE_NAME IN ('users', 'employees', 'payroll_periods')
-    `, [process.env.DB_NAME]);
+    const supabase = require('./config/supabase');
+    let dbStatus = { connected: false, essentialTables: null };
+    if (supabase) {
+      const { data, error } = await supabase
+        .from('users')
+        .select('id')
+        .limit(1);
+      if (!error) dbStatus.connected = true;
+    } else {
+      const db = require('./config/database');
+      const withTimeout = (promise, ms) => {
+        return new Promise((resolve, reject) => {
+          const t = setTimeout(() => reject(new Error('DB timeout')), ms);
+          promise.then((v) => { clearTimeout(t); resolve(v); }).catch((e) => { clearTimeout(t); reject(e); });
+        });
+      };
+      await withTimeout(db.query('SELECT 1'), Number(process.env.HEALTH_DB_TIMEOUT) || 3000);
+      dbStatus.connected = true;
+    }
     res.json({
       status: 'OK',
       message: 'KBC Office Server is running',
       timestamp: new Date().toISOString(),
       database: {
-        connected: true,
-        essentialTables: tables.length
+        connected: dbStatus.connected,
+        essentialTables: dbStatus.essentialTables
       },
       uptime: process.uptime(),
       memory: process.memoryUsage()

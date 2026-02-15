@@ -1,67 +1,98 @@
-const db = require('../config/database');
+const supabase = require('../config/supabase');
 
 class User {
   static async create(userData) {
-    const [result] = await db.query(
-      'INSERT INTO users (username, email, password, role, full_name, department) VALUES (?, ?, ?, ?, ?, ?)',
-      [userData.username, userData.email, userData.password, userData.role, userData.full_name, userData.department]
-    );
-    return result.insertId;
+    const { data, error } = await supabase
+      .from('users')
+      .insert({
+        username: userData.username,
+        email: userData.email,
+        password: userData.password,
+        role: userData.role,
+        full_name: userData.full_name,
+        department: userData.department,
+        is_active: true
+      })
+      .select('id')
+      .single();
+    if (error) throw error;
+    return data.id;
   }
 
   static async findByUsername(username) {
-    const [rows] = await db.query(
-      'SELECT * FROM users WHERE username = ? AND is_active = TRUE',
-      [username]
-    );
-    return rows[0];
+    const { data, error } = await supabase
+      .from('users')
+      .select('*')
+      .eq('username', username)
+      .eq('is_active', true)
+      .maybeSingle();
+    if (error) throw error;
+    return data;
   }
 
   static async findByEmail(email) {
-    const [rows] = await db.query(
-      'SELECT * FROM users WHERE email = ? AND is_active = TRUE',
-      [email]
-    );
-    return rows[0];
+    const { data, error } = await supabase
+      .from('users')
+      .select('*')
+      .eq('email', email)
+      .eq('is_active', true)
+      .maybeSingle();
+    if (error) throw error;
+    return data;
   }
 
   static async findById(id) {
-    const [rows] = await db.query(
-      'SELECT id, username, email, role, full_name, department, created_at, is_active FROM users WHERE id = ?',
-      [id]
-    );
-    return rows[0];
+    const { data, error } = await supabase
+      .from('users')
+      .select('id, username, email, role, full_name, department, created_at, is_active')
+      .eq('id', id)
+      .maybeSingle();
+    if (error) throw error;
+    return data;
   }
 
   static async findAll() {
-    const [rows] = await db.query(
-      'SELECT id, username, email, role, full_name, department, created_at, is_active FROM users WHERE is_active = TRUE ORDER BY created_at DESC'
-    );
-    return rows;
+    const { data, error } = await supabase
+      .from('users')
+      .select('id, username, email, role, full_name, department, created_at, is_active')
+      .eq('is_active', true)
+      .order('created_at', { ascending: false });
+    if (error) throw error;
+    return data;
   }
 
   static async update(id, userData) {
-    const [result] = await db.query(
-      'UPDATE users SET full_name = ?, department = ?, role = ? WHERE id = ?',
-      [userData.full_name, userData.department, userData.role, id]
-    );
-    return result.affectedRows;
+    const { data, error } = await supabase
+      .from('users')
+      .update({
+        full_name: userData.full_name,
+        department: userData.department,
+        role: userData.role
+      })
+      .eq('id', id)
+      .select('id');
+    if (error) throw error;
+    return (data && data.length) ? 1 : 0;
   }
 
   static async deactivate(id) {
-    const [result] = await db.query(
-      'UPDATE users SET is_active = FALSE WHERE id = ?',
-      [id]
-    );
-    return result.affectedRows;
+    const { data, error } = await supabase
+      .from('users')
+      .update({ is_active: false })
+      .eq('id', id)
+      .select('id');
+    if (error) throw error;
+    return (data && data.length) ? 1 : 0;
   }
 
   static async activate(id) {
-    const [result] = await db.query(
-      'UPDATE users SET is_active = TRUE WHERE id = ?',
-      [id]
-    );
-    return result.affectedRows;
+    const { data, error } = await supabase
+      .from('users')
+      .update({ is_active: true })
+      .eq('id', id)
+      .select('id');
+    if (error) throw error;
+    return (data && data.length) ? 1 : 0;
   }
 }
 

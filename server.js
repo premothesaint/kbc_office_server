@@ -28,50 +28,68 @@ const PORT = process.env.PORT || 5001;
 
 const startServer = async () => {
   try {
-    const db = require('./config/database');
-    
-    // Test database connection
-    const [result] = await db.query('SELECT 1');
-    console.log('✅ Database connection successful');
-    
-    // Check if we have the required tables
-    const [tables] = await db.query(`
-      SELECT COUNT(*) as count 
-      FROM information_schema.tables 
-      WHERE TABLE_SCHEMA = ? 
-      AND TABLE_NAME IN ('users', 'employees')
-    `, [process.env.DB_NAME]);
-    
-    if (tables[0].count < 2) {
-      console.warn('⚠️  Some required tables may be missing. Run the SQL setup script.');
+    if (process.env.SUPABASE_URL) {
+      console.log('🔌 Starting server with Supabase configured; skipping MySQL checks');
+    } else {
+      const db = require('./config/database');
+      const [result] = await db.query('SELECT 1');
+      console.log('✅ MySQL connection successful');
+      const [tables] = await db.query(`
+        SELECT COUNT(*) as count 
+        FROM information_schema.tables 
+        WHERE TABLE_SCHEMA = ? 
+        AND TABLE_NAME IN ('users', 'employees')
+      `, [process.env.DB_NAME]);
+      if (tables[0].count < 2) {
+        console.warn('⚠️  Some required tables may be missing. Run the SQL setup script.');
+      }
     }
-    
-    // Start server
-    app.listen(PORT, () => {
-      console.log(`\n🚀 Server running on port ${PORT}`);
-      console.log(`📊 Health check: http://localhost:${PORT}/health`);
-      console.log(`📚 API Docs: http://localhost:${PORT}/api`);
-      console.log(`🌐 React app: http://localhost:5173`);
-      
-      console.log('\n👥 Demo Users (from database):');
-      console.log('├─ Admin: admin / admin123');
-      console.log('├─ Payroll: payroll / payroll123');
-      console.log('└─ Petty Cash: pettycash / petty123');
-      
-      console.log('\n📈 Server Info:');
-      console.log(`├─ Environment: ${process.env.NODE_ENV || 'development'}`);
-      console.log(`├─ Node.js: ${process.version}`);
-      console.log(`└─ Memory: ${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB`);
-    });
+ 
+    const tryListen = (port) => {
+      const server = app.listen(port, () => {
+        console.log(`\n🚀 Server running on port ${port}`);
+        console.log(`📊 Health check: http://localhost:${port}/health`);
+        console.log(`📚 API Docs: http://localhost:${port}/api`);
+        console.log(`🌐 React app: http://localhost:5173`);
+        console.log('\n👥 Demo Users (from database):');
+        console.log('├─ Admin: admin / admin123');
+        console.log('├─ Payroll: payroll / payroll123');
+        console.log('└─ Petty Cash: pettycash / petty123');
+        console.log('\n📈 Server Info:');
+        console.log(`├─ Environment: ${process.env.NODE_ENV || 'development'}`);
+        console.log(`├─ Node.js: ${process.version}`);
+        console.log(`└─ Memory: ${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)}MB`);
+      });
+      server.on('error', (err) => {
+        if (err.code === 'EADDRINUSE') {
+          console.warn(`Port ${port} in use, retrying on port ${port + 1}...`);
+          tryListen(port + 1);
+        } else {
+          throw err;
+        }
+      });
+    };
+    tryListen(PORT);
     
   } catch (error) {
-    console.error('❌ Failed to start server:', error.message);
-    console.error('\nTroubleshooting steps:');
-    console.error('1. Check if MySQL is running: `sudo service mysql status`');
-    console.error('2. Verify database credentials in .env file');
-    console.error('3. Ensure database "kbc_office" exists');
-    console.error('4. Run the SQL setup script to create tables');
-    process.exit(1);
+    console.error('❌ Database check failed:', error.message);
+    console.warn('Starting server without DB connectivity; API endpoints that require DB may fail.');
+    const tryListen = (port) => {
+      const server = app.listen(port, () => {
+        console.log(`\n🚀 Server running on port ${port} (DB not connected)`);
+        console.log(`📊 Health check: http://localhost:${port}/health`);
+        console.log(`📚 API Docs: http://localhost:${port}/api`);
+      });
+      server.on('error', (err) => {
+        if (err.code === 'EADDRINUSE') {
+          console.warn(`Port ${port} in use, retrying on port ${port + 1}...`);
+          tryListen(port + 1);
+        } else {
+          throw err;
+        }
+      });
+    };
+    tryListen(PORT);
   }
 };
 
