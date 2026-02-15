@@ -137,38 +137,56 @@ router.get('/attendance', async (req, res) => {
 router.post('/attendance', async (req, res) => {
   try {
     const { employee_id, payroll_period_id, day_index, time_in, time_out, date, status, amount, working_hours } = req.body;
-    
     if (!employee_id || !payroll_period_id || !day_index || !date) {
-      return res.status(400).json({ 
-        success: false,
-        message: 'Missing required fields' 
-      });
+      return res.status(400).json({ success: false, message: 'Missing required fields' });
     }
-    
-    // Check if record already exists
-    const [existing] = await db.query(
-      `SELECT * FROM attendance 
-       WHERE employee_id = ? AND payroll_period_id = ? AND day_index = ?`,
-      [parseInt(employee_id), parseInt(payroll_period_id), parseInt(day_index)]
-    );
-    
+    const eid = parseInt(employee_id, 10);
+    const pid = parseInt(payroll_period_id, 10);
+    const didx = parseInt(day_index, 10);
     let finalStatus = status || 'partial';
-    let finalAmount = amount || 0;
-    let finalWorkingHours = working_hours || 0;
-    
-    // If fixed rate employee, set status to 'fixed'
+    let finalAmount = amount != null ? parseFloat(amount) : 0;
+    let finalWorkingHours = working_hours != null ? parseFloat(working_hours) : 0;
     if (time_in === 'FIXED' && time_out === 'FIXED') {
       finalStatus = 'fixed';
-      // Get employee's fixed rate
-      const [employee] = await db.query(
-        'SELECT fixed_rate FROM employees WHERE id = ?',
-        [parseInt(employee_id)]
-      );
-      if (employee.length > 0) {
-        finalAmount = employee[0].fixed_rate || 0;
-      }
+      const Employee = require('../models/Employee');
+      const emp = await Employee.findById(eid);
+      if (emp) finalAmount = parseFloat(emp.fixed_rate) || 0;
     }
-    
+    if (useSupabase && supabase) {
+      const { data: existing } = await supabase
+        .from('attendance')
+        .select('id')
+        .eq('employee_id', eid)
+        .eq('payroll_period_id', pid)
+        .eq('day_index', didx)
+        .maybeSingle();
+      const row = {
+        employee_id: eid,
+        payroll_period_id: pid,
+        date: date.includes('-') ? date : new Date().toISOString().split('T')[0],
+        day_index: didx,
+        time_in: time_in ?? '-',
+        time_out: time_out ?? '-',
+        working_hours: finalWorkingHours,
+        amount: finalAmount,
+        status: finalStatus,
+        is_approved: false,
+        updated_at: new Date().toISOString()
+      };
+      if (existing) {
+        const { error } = await supabase.from('attendance').update(row).eq('id', existing.id);
+        if (error) throw error;
+        return res.json({ success: true, message: 'Attendance updated successfully', updated: true });
+      }
+      const { error } = await supabase.from('attendance').insert(row);
+      if (error) throw error;
+      return res.json({ success: true, message: 'Attendance created successfully', created: true });
+    }
+    if (!db) return res.status(503).json({ success: false, message: 'Database not configured' });
+    const [existing] = await db.query(
+      `SELECT * FROM attendance WHERE employee_id = ? AND payroll_period_id = ? AND day_index = ?`,
+      [eid, pid, didx]
+    );
     if (existing.length > 0) {
       // Update existing record
       const updateFields = [];
@@ -203,55 +221,25 @@ router.post('/attendance', async (req, res) => {
       updateFields.push('is_approved = 0');
       updateFields.push('approved_at = NULL');
       
-      updateValues.push(parseInt(employee_id));
-      updateValues.push(parseInt(payroll_period_id));
-      updateValues.push(parseInt(day_index));
-      
+      updateValues.push(eid);
+      updateValues.push(pid);
+      updateValues.push(didx);
       await db.query(
-        `UPDATE attendance 
-         SET ${updateFields.join(', ')}, updated_at = CURRENT_TIMESTAMP
+        `UPDATE attendance SET ${updateFields.join(', ')}, updated_at = CURRENT_TIMESTAMP
          WHERE employee_id = ? AND payroll_period_id = ? AND day_index = ?`,
         updateValues
       );
-      
-      return res.json({ 
-        success: true,
-        message: 'Attendance updated successfully',
-        updated: true 
-      });
-    } else {
-      // Insert new record
-      await db.query(
-        `INSERT INTO attendance 
-         (employee_id, payroll_period_id, date, day_index, time_in, time_out, 
-          working_hours, amount, status, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
-        [
-          parseInt(employee_id),
-          parseInt(payroll_period_id),
-          date,
-          parseInt(day_index),
-          time_in || '-',
-          time_out || '-',
-          parseFloat(finalWorkingHours),
-          parseFloat(finalAmount),
-          finalStatus
-        ]
-      );
-      
-      return res.json({ 
-        success: true,
-        message: 'Attendance created successfully',
-        created: true 
-      });
+      return res.json({ success: true, message: 'Attendance updated successfully', updated: true });
     }
+    await db.query(
+      `INSERT INTO attendance (employee_id, payroll_period_id, date, day_index, time_in, time_out, working_hours, amount, status, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+      [eid, pid, date, didx, time_in || '-', time_out || '-', parseFloat(finalWorkingHours), parseFloat(finalAmount), finalStatus]
+    );
+    return res.json({ success: true, message: 'Attendance created successfully', created: true });
   } catch (error) {
     console.error('Database error:', error);
-    res.status(500).json({ 
-      success: false,
-      message: 'Error creating attendance',
-      error: error.message 
-    });
+    res.status(500).json({ success: false, message: 'Error creating attendance', error: error.message });
   }
 });
 
@@ -259,71 +247,63 @@ router.post('/attendance', async (req, res) => {
 router.put('/attendance/calculations', async (req, res) => {
   try {
     const { employee_id, payroll_period_id, day_index, working_hours, amount, status, is_approved } = req.body;
-    
     if (!employee_id || !payroll_period_id || !day_index) {
-      return res.status(400).json({ 
-        success: false,
-        message: 'Missing required fields' 
-      });
+      return res.status(400).json({ success: false, message: 'Missing required fields' });
     }
-    
+    const eid = parseInt(employee_id, 10);
+    const pid = parseInt(payroll_period_id, 10);
+    const didx = parseInt(day_index, 10);
+    if (useSupabase && supabase) {
+      const updates = { updated_at: new Date().toISOString() };
+      if (working_hours !== undefined) updates.working_hours = parseFloat(working_hours);
+      if (amount !== undefined) updates.amount = parseFloat(amount);
+      if (status !== undefined) updates.status = status;
+      if (is_approved !== undefined) {
+        updates.is_approved = !!is_approved;
+        updates.approved_at = is_approved ? new Date().toISOString() : null;
+      }
+      const { error } = await supabase
+        .from('attendance')
+        .update(updates)
+        .eq('employee_id', eid)
+        .eq('payroll_period_id', pid)
+        .eq('day_index', didx);
+      if (error) throw error;
+      return res.json({ success: true, message: 'Attendance calculated fields updated successfully' });
+    }
+    if (!db) return res.status(503).json({ success: false, message: 'Database not configured' });
     const updateFields = [];
     const updateValues = [];
-    
     if (working_hours !== undefined) {
       updateFields.push('working_hours = ?');
       updateValues.push(parseFloat(working_hours));
     }
-    
     if (amount !== undefined) {
       updateFields.push('amount = ?');
       updateValues.push(parseFloat(amount));
     }
-    
     if (status !== undefined) {
       updateFields.push('status = ?');
       updateValues.push(status);
     }
-    
     if (is_approved !== undefined) {
       updateFields.push('is_approved = ?');
       updateValues.push(is_approved ? 1 : 0);
-      if (is_approved) {
-        updateFields.push('approved_at = CURRENT_TIMESTAMP');
-      } else {
-        updateFields.push('approved_at = NULL');
-      }
+      updateFields.push(is_approved ? 'approved_at = CURRENT_TIMESTAMP' : 'approved_at = NULL');
     }
-    
     if (updateFields.length === 0) {
-      return res.status(400).json({ 
-        success: false,
-        message: 'No fields to update' 
-      });
+      return res.status(400).json({ success: false, message: 'No fields to update' });
     }
-    
-    updateValues.push(parseInt(employee_id));
-    updateValues.push(parseInt(payroll_period_id));
-    updateValues.push(parseInt(day_index));
-    
+    updateValues.push(eid, pid, didx);
     await db.query(
-      `UPDATE attendance 
-       SET ${updateFields.join(', ')}, updated_at = CURRENT_TIMESTAMP
+      `UPDATE attendance SET ${updateFields.join(', ')}, updated_at = CURRENT_TIMESTAMP
        WHERE employee_id = ? AND payroll_period_id = ? AND day_index = ?`,
       updateValues
     );
-    
-    res.json({ 
-      success: true,
-      message: 'Attendance calculated fields updated successfully' 
-    });
+    res.json({ success: true, message: 'Attendance calculated fields updated successfully' });
   } catch (error) {
     console.error('Database error:', error);
-    res.status(500).json({ 
-      success: false,
-      message: 'Error updating attendance',
-      error: error.message 
-    });
+    res.status(500).json({ success: false, message: 'Error updating attendance', error: error.message });
   }
 });
 

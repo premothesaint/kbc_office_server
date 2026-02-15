@@ -179,12 +179,12 @@ class PayrollController {
   async saveAttendance(req, res) {
     const { employeeId, periodId, date, dayIndex, status, amount, isWeekend } = req.body;
     const userId = req.user?.id || 1;
-    
+    const Employee = require('../models/Employee');
+
     try {
-      // Determine status from amount/value
       let attendanceStatus = null;
       let attendanceAmount = null;
-      
+
       if (amount !== null && amount !== undefined && amount !== '') {
         attendanceStatus = 'present';
         attendanceAmount = parseFloat(amount);
@@ -193,47 +193,73 @@ class PayrollController {
         attendanceAmount = 0;
       } else if (status === 'NO' || status === 'no_out') {
         attendanceStatus = 'no_out';
-        attendanceAmount = 0;  // NO OUT = 0 amount
+        attendanceAmount = 0;
       } else if (status === 'NI' || status === 'no_in') {
         attendanceStatus = 'no_in';
-        attendanceAmount = 0;  // NO IN = 0 amount
+        attendanceAmount = 0;
       } else if (status === 'present') {
-        // Get employee's rate
+        const emp = await Employee.findById(employeeId);
+        if (emp) {
+          attendanceStatus = 'present';
+          attendanceAmount = parseFloat(emp.daily_rate ?? emp.fixed_rate ?? 0) || 0;
+        }
+      }
+
+      if (supabase) {
+        const { data: existing } = await supabase
+          .from('attendance_records')
+          .select('id')
+          .eq('employee_id', employeeId)
+          .eq('payroll_period_id', periodId)
+          .eq('day_index', dayIndex)
+          .maybeSingle();
+        const dateVal = date && date.includes('-') ? date : null;
+        const row = {
+          employee_id: parseInt(employeeId, 10),
+          payroll_period_id: parseInt(periodId, 10),
+          date: dateVal || new Date().toISOString().split('T')[0],
+          day_index: parseInt(dayIndex, 10),
+          status: attendanceStatus,
+          amount: attendanceAmount,
+          is_weekend: !!isWeekend,
+          created_by: userId,
+          updated_at: new Date().toISOString()
+        };
+        if (existing) {
+          await supabase.from('attendance_records').update(row).eq('id', existing.id);
+        } else {
+          await supabase.from('attendance_records').insert(row);
+        }
+        return res.json({ success: true, message: 'Attendance saved successfully' });
+      }
+
+      if (!db) return res.status(503).json({ error: 'Database not configured' });
+      if (status === 'present' && attendanceStatus == null) {
         const [employee] = await db.query(
           'SELECT COALESCE(daily_rate, fixed_rate) as rate FROM employees WHERE id = ?',
           [employeeId]
         );
-        
-        if (employee.length > 0) {
+        if (employee?.length > 0) {
           attendanceStatus = 'present';
           attendanceAmount = parseFloat(employee[0].rate) || 0;
         }
       }
-      
-      // Check if record exists
       const [existing] = await db.query(
         'SELECT id FROM attendance_records WHERE employee_id = ? AND payroll_period_id = ? AND day_index = ?',
         [employeeId, periodId, dayIndex]
       );
-      
       if (existing.length > 0) {
-        // Update existing record
         await db.query(
-          `UPDATE attendance_records 
-          SET status = ?, amount = ?, updated_at = NOW(), created_by = ?
-          WHERE id = ?`,
+          `UPDATE attendance_records SET status = ?, amount = ?, updated_at = NOW(), created_by = ? WHERE id = ?`,
           [attendanceStatus, attendanceAmount, userId, existing[0].id]
         );
       } else {
-        // Insert new record
         await db.query(
-          `INSERT INTO attendance_records 
-          (employee_id, payroll_period_id, date, day_index, status, amount, is_weekend, created_by)
+          `INSERT INTO attendance_records (employee_id, payroll_period_id, date, day_index, status, amount, is_weekend, created_by)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
           [employeeId, periodId, date, dayIndex, attendanceStatus, attendanceAmount, isWeekend || 0, userId]
         );
       }
-      
       res.json({ success: true, message: 'Attendance saved successfully' });
     } catch (error) {
       console.error('Error saving attendance:', error);
