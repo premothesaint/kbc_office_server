@@ -21,12 +21,15 @@ const allowedOrigins = [
 app.use(cors({
   origin: function (origin, callback) {
     if (!origin) return callback(null, true);
-    if (allowedOrigins.indexOf(origin) === -1) {
-      const msg = 'The CORS policy for this site does not allow access from the specified origin.';
-      console.warn(`CORS blocked: ${origin}`);
-      return callback(new Error(msg), false);
+    const isLocalAllowed = allowedOrigins.indexOf(origin) !== -1;
+    const isVercelDomain = typeof origin === 'string' && origin.includes('vercel.app');
+    const isEnvAllowed = process.env.FRONTEND_URL && origin === process.env.FRONTEND_URL;
+    if (isLocalAllowed || isVercelDomain || isEnvAllowed) {
+      return callback(null, true);
     }
-    return callback(null, true);
+    const msg = 'The CORS policy for this site does not allow access from the specified origin.';
+    console.warn(`CORS blocked: ${origin}`);
+    return callback(new Error(msg), false);
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
