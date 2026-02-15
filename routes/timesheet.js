@@ -645,60 +645,74 @@ router.get('/status', async (req, res) => {
 router.get('/payroll-summary', async (req, res) => {
   try {
     const { period_id } = req.query;
-    
     if (!period_id) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         success: false,
-        message: 'Missing required parameter: period_id' 
+        message: 'Missing required parameter: period_id'
       });
     }
-    
-    // Get all employees and their attendance for this period
-    const [employees] = await db.query(`
-      SELECT 
-        e.id,
-        e.employee_id,
-        e.name,
-        e.department,
-        e.position,
-        e.rate_type,
-        e.daily_rate,
-        e.fixed_rate,
-        CASE 
-            WHEN e.rate_type = 'daily' THEN e.daily_rate 
-            ELSE e.fixed_rate 
-        END AS rate
-      FROM employees e
-      WHERE e.is_active = 1
-      ORDER BY e.department, e.name
-    `);
-    
-    // Get attendance records for this period
-    const [attendanceRecords] = await db.query(`
-      SELECT 
-        ar.employee_id,
-        ar.day_index,
-        ar.status,
-        ar.amount
-      FROM attendance_records ar
-      WHERE ar.payroll_period_id = ?
-      ORDER BY ar.employee_id, ar.day_index
-    `, [parseInt(period_id)]);
-    
-    // Get period details
-    const [period] = await db.query(`
-      SELECT * FROM payroll_periods WHERE id = ?
-    `, [parseInt(period_id)]);
-    
-    if (period.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: 'Payroll period not found'
-      });
+    const periodIdNum = parseInt(period_id, 10);
+    let employees;
+    let attendanceRecords;
+    let periodData;
+
+    if (useSupabase && supabase) {
+      const empList = await Employee.findAll();
+      employees = empList.map(e => ({
+        id: e.id,
+        employee_id: e.employee_id,
+        name: e.name,
+        department: e.department,
+        position: e.position,
+        rate_type: e.rate_type,
+        daily_rate: e.daily_rate,
+        fixed_rate: e.fixed_rate,
+        rate: e.rate_type === 'daily' ? (e.daily_rate != null ? parseFloat(e.daily_rate) : 0) : (e.fixed_rate != null ? parseFloat(e.fixed_rate) : 0)
+      }));
+      const { data: periodRow, error: periodErr } = await supabase
+        .from('payroll_periods')
+        .select('*')
+        .eq('id', periodIdNum)
+        .maybeSingle();
+      if (periodErr || !periodRow) {
+        return res.status(404).json({ success: false, message: 'Payroll period not found' });
+      }
+      periodData = periodRow;
+      const { data: attRows, error: attErr } = await supabase
+        .from('attendance_records')
+        .select('employee_id, day_index, status, amount')
+        .eq('payroll_period_id', periodIdNum)
+        .order('employee_id')
+        .order('day_index');
+      if (attErr) throw attErr;
+      attendanceRecords = (attRows || []).map(r => ({
+        employee_id: typeof r.employee_id === 'string' ? parseInt(r.employee_id, 10) : r.employee_id,
+        day_index: r.day_index,
+        status: r.status,
+        amount: r.amount
+      }));
+    } else {
+      if (!db) return res.status(503).json({ success: false, message: 'Database not configured' });
+      const [empRows] = await db.query(`
+        SELECT e.id, e.employee_id, e.name, e.department, e.position, e.rate_type, e.daily_rate, e.fixed_rate,
+               CASE WHEN e.rate_type = 'daily' THEN e.daily_rate ELSE e.fixed_rate END AS rate
+        FROM employees e WHERE e.is_active = 1 ORDER BY e.department, e.name
+      `);
+      employees = empRows;
+      const [attRows] = await db.query(`
+        SELECT employee_id, day_index, status, amount
+        FROM attendance_records
+        WHERE payroll_period_id = ? ORDER BY employee_id, day_index
+      `, [periodIdNum]);
+      attendanceRecords = attRows;
+      const [period] = await db.query(`SELECT * FROM payroll_periods WHERE id = ?`, [periodIdNum]);
+      if (!period || period.length === 0) {
+        return res.status(404).json({ success: false, message: 'Payroll period not found' });
+      }
+      periodData = period[0];
     }
-    
+
     // Generate dates for the period
-    const periodData = period[0];
     const dates = [];
     const startDate = new Date(periodData.year, getMonthNumber(periodData.month) - 1, periodData.start_day);
     const endDate = new Date(periodData.year, getMonthNumber(periodData.month) - 1, periodData.end_day);
