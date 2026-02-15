@@ -1,4 +1,2 @@
-const serverless = require('serverless-http');
-const app = require('./app');
-
-module.exports = serverless(app);
+// Vercel zero-config Express: export the app so Project Settings apply (no builds).
+module.exports = require('./app');
