@@ -92,7 +92,7 @@ app.get('/api', (req, res) => {
   });
 });
 
-app.get('/health', async (req, res) => {
+app.get(['/health', '/api/health'], async (req, res) => {
   try {
     const db = require('./config/database');
     await db.query('SELECT 1');
