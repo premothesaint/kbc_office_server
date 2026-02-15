@@ -95,7 +95,13 @@ app.get('/api', (req, res) => {
 app.get(['/health', '/api/health'], async (req, res) => {
   try {
     const db = require('./config/database');
-    await db.query('SELECT 1');
+    const withTimeout = (promise, ms) => {
+      return new Promise((resolve, reject) => {
+        const t = setTimeout(() => reject(new Error('DB timeout')), ms);
+        promise.then((v) => { clearTimeout(t); resolve(v); }).catch((e) => { clearTimeout(t); reject(e); });
+      });
+    };
+    await withTimeout(db.query('SELECT 1'), Number(process.env.HEALTH_DB_TIMEOUT) || 3000);
     const [tables] = await db.query(`
       SELECT TABLE_NAME 
       FROM information_schema.tables 
@@ -125,6 +131,10 @@ app.get(['/health', '/api/health'], async (req, res) => {
 });
 
 app.options('*', cors());
+
+app.get('/api/ping', (req, res) => {
+  res.json({ status: 'OK' });
+});
 
 app.use('/api/*', (req, res) => {
   res.status(404).json({
