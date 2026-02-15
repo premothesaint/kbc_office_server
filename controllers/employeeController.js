@@ -81,39 +81,40 @@ const employeeController = {
   // Update employee
   updateEmployee: async (req, res) => {
     try {
-      const { 
-        name, 
-        department, 
-        position, 
-        rate_type, 
-        daily_rate, 
-        fixed_rate, 
-        password, 
-        change_password 
-      } = req.body;
-
-      // Validate required fields
-      if (!name || !department || !position || !rate_type) {
-        return res.status(400).json({ error: 'Required fields are missing' });
-      }
-
-      // Validate rate based on rate type
-      if (rate_type === 'daily' && !daily_rate) {
-        return res.status(400).json({ error: 'Daily rate is required for daily rate type' });
-      }
-      
-      if (rate_type === 'fixed' && !fixed_rate) {
-        return res.status(400).json({ error: 'Fixed rate is required for fixed rate type' });
-      }
-
-      // Prepare employee data
-      const employeeData = {
+      const {
         name,
         department,
         position,
         rate_type,
-        daily_rate: rate_type === 'daily' ? parseFloat(daily_rate) : null,
-        fixed_rate: rate_type === 'fixed' ? parseFloat(fixed_rate) : null
+        daily_rate,
+        fixed_rate,
+        password,
+        change_password
+      } = req.body;
+
+      if (!name || !department || !position) {
+        return res.status(400).json({ error: 'Required fields are missing' });
+      }
+
+      const existing = await Employee.findById(req.params.id);
+      if (!existing) {
+        return res.status(404).json({ error: 'Employee not found' });
+      }
+      const effectiveRateType = (rate_type && (rate_type === 'daily' || rate_type === 'fixed')) ? rate_type : (existing.rate_type || 'daily');
+      if (effectiveRateType === 'daily' && (daily_rate === undefined || daily_rate === null || daily_rate === '')) {
+        return res.status(400).json({ error: 'Daily rate is required for daily rate type' });
+      }
+      if (effectiveRateType === 'fixed' && (fixed_rate === undefined || fixed_rate === null || fixed_rate === '')) {
+        return res.status(400).json({ error: 'Fixed rate is required for fixed rate type' });
+      }
+
+      const employeeData = {
+        name,
+        department,
+        position,
+        rate_type: effectiveRateType,
+        daily_rate: effectiveRateType === 'daily' ? parseFloat(daily_rate) : null,
+        fixed_rate: effectiveRateType === 'fixed' ? parseFloat(fixed_rate) : null
       };
 
       // Only update password if change_password is true and password is provided

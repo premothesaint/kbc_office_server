@@ -269,61 +269,46 @@ class PayrollController {
 
   // DELETE attendance method using query parameters
   async deleteAttendance(req, res) {
-    // Use query parameters for DELETE request
     const { employeeId, periodId, date, dayIndex } = req.query;
-    
     try {
-      console.log('Attempting to delete attendance record with query params:', {
-        employeeId,
-        periodId, 
-        date,
-        dayIndex
-      });
-      
-      // Validate required parameters
-      if (!employeeId || !periodId || !dayIndex) {
-        return res.status(400).json({ 
-          error: 'Missing required parameters: employeeId, periodId, and dayIndex are required' 
-        });
+      if (!employeeId || !periodId || dayIndex === undefined || dayIndex === null || dayIndex === '') {
+        return res.status(400).json({ success: false, message: 'employeeId, periodId, and dayIndex are required' });
       }
-      
-      // Build WHERE conditions
+      const eid = parseInt(employeeId, 10);
+      const pid = parseInt(periodId, 10);
+      const didx = parseInt(dayIndex, 10);
+      if (supabase) {
+        const { data, error } = await supabase
+          .from('attendance_records')
+          .delete()
+          .eq('employee_id', eid)
+          .eq('payroll_period_id', pid)
+          .eq('day_index', didx)
+          .select('id');
+        if (error) throw error;
+        const affected = (data && data.length) || 0;
+        if (affected > 0) {
+          return res.json({ success: true, message: 'Attendance record successfully deleted', affectedRows: affected });
+        }
+        return res.status(404).json({ success: false, message: 'No attendance record found', affectedRows: 0 });
+      }
+      if (!db) return res.status(503).json({ success: false, message: 'Database not configured' });
       const conditions = ['employee_id = ?', 'payroll_period_id = ?', 'day_index = ?'];
-      const values = [employeeId, periodId, dayIndex];
-      
-      // Add date condition if provided
+      const values = [eid, pid, didx];
       if (date) {
         conditions.push('date = ?');
         values.push(date);
       }
-      
-      const whereClause = conditions.join(' AND ');
-      const deleteQuery = `DELETE FROM attendance_records WHERE ${whereClause}`;
-      
-      console.log('Executing delete query:', deleteQuery);
-      console.log('With values:', values);
-      
-      const [result] = await db.query(deleteQuery, values);
-      
-      console.log('Delete completed. Affected rows:', result.affectedRows);
-      
-      if (result.affectedRows > 0) {
-        res.json({
-          success: true,
-          message: 'Attendance record successfully deleted',
-          affectedRows: result.affectedRows
-        });
-      } else {
-        res.status(404).json({
-          success: false,
-          message: 'No attendance record found with the specified criteria',
-          affectedRows: 0
-        });
+      const [result] = await db.query(`DELETE FROM attendance_records WHERE ${conditions.join(' AND ')}`, values);
+      const affectedRows = result.affectedRows || 0;
+      if (affectedRows > 0) {
+        return res.json({ success: true, message: 'Attendance record successfully deleted', affectedRows });
       }
-      
+      return res.status(404).json({ success: false, message: 'No attendance record found', affectedRows: 0 });
     } catch (error) {
       console.error('Database error during delete:', error);
-      res.status(500).json({ 
+      res.status(500).json({
+        success: false,
         error: 'Failed to delete attendance record',
         details: error.message,
         sqlMessage: error.sqlMessage

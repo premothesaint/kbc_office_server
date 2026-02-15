@@ -310,12 +310,79 @@ router.put('/attendance/calculations', async (req, res) => {
   // ================ APPROVE TIMESHEET AND SYNC TO PAYROLL ================
   router.put('/attendance/approve', async (req, res) => {
     const { employee_id, payroll_period_id, sync_to_payroll = true, force_resync = false } = req.body;
-    
+    const eid = parseInt(employee_id, 10);
+    const pid = parseInt(payroll_period_id, 10);
     try {
-      // Start transaction
+      if (useSupabase && supabase) {
+        let q = supabase.from('attendance').select('*').eq('employee_id', eid).eq('payroll_period_id', pid);
+        if (!force_resync) q = q.eq('is_approved', false);
+        const { data: attendanceRecords, error: fetchErr } = await q.order('day_index');
+        if (fetchErr) throw fetchErr;
+        if (!attendanceRecords || attendanceRecords.length === 0) {
+          return res.status(404).json({ success: false, message: 'No attendance records found' });
+        }
+        const Employee = require('../models/Employee');
+        const emp = await Employee.findById(eid);
+        const rate = emp ? (emp.rate_type === 'fixed' ? parseFloat(emp.fixed_rate) : parseFloat(emp.daily_rate)) || 0 : 0;
+        await supabase.from('attendance').update({ is_approved: true, approved_at: new Date().toISOString(), updated_at: new Date().toISOString() }).eq('employee_id', eid).eq('payroll_period_id', pid);
+        if (sync_to_payroll) {
+          for (const record of attendanceRecords) {
+            const hasValidIn = record.time_in && record.time_in !== '-' && record.time_in !== '' && record.time_in !== 'FIXED';
+            const hasValidOut = record.time_out && record.time_out !== '-' && record.time_out !== '' && record.time_out !== 'FIXED';
+            let status = 'absent';
+            let amount = 0;
+            if (!hasValidIn && hasValidOut) {
+              status = 'no_out';
+            } else if (hasValidIn && !hasValidOut) {
+              status = 'no_in';
+            } else if (hasValidIn && hasValidOut) {
+              if (record.status === 'fixed') {
+                status = 'fixed';
+                amount = rate;
+              } else if (record.status === 'present') {
+                status = 'present';
+                amount = parseFloat(record.amount) || rate;
+              } else if (record.status === 'partial') {
+                status = 'partial';
+                amount = parseFloat(record.amount) || 0;
+              }
+            }
+            const row = {
+              employee_id: eid,
+              payroll_period_id: pid,
+              date: record.date,
+              day_index: record.day_index,
+              status,
+              amount: parseFloat(amount) || 0,
+              is_weekend: false,
+              updated_at: new Date().toISOString()
+            };
+            await supabase.from('attendance_records').upsert(row, { onConflict: 'employee_id,payroll_period_id,date' });
+            const psRow = {
+              employee_id: eid,
+              payroll_period_id: pid,
+              day_index: record.day_index,
+              date: record.date,
+              amount: parseFloat(amount) || 0,
+              status,
+              is_approved: true,
+              approved_at: new Date().toISOString(),
+              updated_at: new Date().toISOString()
+            };
+            await supabase.from('payroll_summary').upsert(psRow, { onConflict: 'employee_id,payroll_period_id,day_index' });
+          }
+        }
+        return res.json({
+          success: true,
+          message: 'Timesheet approved and synced to payroll summary successfully',
+          recordsProcessed: attendanceRecords.length,
+          employee_id: eid,
+          payroll_period_id: pid,
+          synced_to_payroll: sync_to_payroll
+        });
+      }
+      if (!db) return res.status(503).json({ success: false, message: 'Database not configured' });
       await db.query('START TRANSACTION');
-      
-      // 1. Get all attendance records for this employee and period
       const [attendanceRecords] = await db.query(`
         SELECT a.*, 
               e.rate_type,
@@ -473,7 +540,7 @@ router.put('/attendance/calculations', async (req, res) => {
       });
       
     } catch (error) {
-      await db.query('ROLLBACK');
+      if (db) try { await db.query('ROLLBACK'); } catch (_) {}
       console.error('Error approving timesheet:', error);
       res.status(500).json({
         success: false,
@@ -485,29 +552,31 @@ router.put('/attendance/calculations', async (req, res) => {
 // ================ UN-APPROVE TIMESHEET ================
 router.put('/attendance/unapprove', async (req, res) => {
   const { employee_id, payroll_period_id } = req.body;
-  
+  const eid = parseInt(employee_id, 10);
+  const pid = parseInt(payroll_period_id, 10);
   try {
-    // Start transaction
-    await db.query('START TRANSACTION');
-    
-    // 1. Update attendance records to unapproved
+    if (useSupabase && supabase) {
+      const { error } = await supabase
+        .from('attendance')
+        .update({ is_approved: false, approved_at: null, updated_at: new Date().toISOString() })
+        .eq('employee_id', eid)
+        .eq('payroll_period_id', pid);
+      if (error) throw error;
+      return res.json({ success: true, message: 'Timesheet un-approved successfully', employee_id: eid, payroll_period_id: pid });
+    }
+    if (!db) return res.status(503).json({ success: false, message: 'Database not configured' });
     await db.query(
-      `UPDATE attendance 
-       SET is_approved = 0, approved_at = NULL, updated_at = CURRENT_TIMESTAMP
-       WHERE employee_id = ? AND payroll_period_id = ?`,
-      [parseInt(employee_id), parseInt(payroll_period_id)]
+      `UPDATE attendance SET is_approved = 0, approved_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE employee_id = ? AND payroll_period_id = ?`,
+      [eid, pid]
     );
-
     res.json({
       success: true,
       message: 'Timesheet un-approved successfully',
-      employee_id: parseInt(employee_id),
-      payroll_period_id: parseInt(payroll_period_id)
+      employee_id: eid,
+      payroll_period_id: pid
     });
-    
-    await db.query('COMMIT');
   } catch (error) {
-    await db.query('ROLLBACK');
+    if (db) try { await db.query('ROLLBACK'); } catch (_) {}
     console.error('Error un-approving timesheet:', error);
     res.status(500).json({
       success: false,
