@@ -56,7 +56,11 @@ const employeeController = {
       res.json(employees);
     } catch (error) {
       console.error('Get employees error:', error);
-      res.status(500).json({ error: 'Server error' });
+      const message = error.message || 'Database error';
+      res.status(500).json({
+        error: 'Server error',
+        message: process.env.NODE_ENV === 'production' ? 'Could not load employees. Check server database config.' : message
+      });
     }
   },
 

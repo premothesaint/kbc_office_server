@@ -1,15 +1,16 @@
 // server/routes/timesheet.js
 const express = require('express');
 const router = express.Router();
-const db = require('../config/database'); // Assuming you have a database config
+const Employee = require('../models/Employee');
+const supabase = require('../config/supabase');
+let db = null;
+try { db = require('../config/database'); } catch (e) {}
+const useSupabase = !!supabase;
 
-// GET all employees
+// GET all employees (uses Employee model → Supabase or MySQL)
 router.get('/employees', async (req, res) => {
   try {
-    const [rows] = await db.query(
-      'SELECT * FROM employees WHERE is_active = 1 ORDER BY department, name'
-    );
-    
+    const rows = await Employee.findAll();
     const employees = rows.map(row => ({
       id: row.id,
       employee_id: row.employee_id,
@@ -17,29 +18,47 @@ router.get('/employees', async (req, res) => {
       department: row.department,
       position: row.position,
       rate_type: row.rate_type,
-      daily_rate: row.daily_rate ? parseFloat(row.daily_rate) : null,
-      fixed_rate: row.fixed_rate ? parseFloat(row.fixed_rate) : null,
+      daily_rate: row.daily_rate != null ? parseFloat(row.daily_rate) : null,
+      fixed_rate: row.fixed_rate != null ? parseFloat(row.fixed_rate) : null,
       is_active: row.is_active
     }));
-    
     res.json({ success: true, data: employees });
   } catch (error) {
     console.error('Database error:', error);
-    res.status(500).json({ 
-      success: false, 
+    res.status(500).json({
+      success: false,
       message: 'Error fetching employees',
-      error: error.message 
+      error: error.message
     });
   }
 });
 
-// GET payroll periods
+// GET payroll periods (Supabase or MySQL)
 router.get('/payroll-periods', async (req, res) => {
   try {
+    if (useSupabase && supabase) {
+      const { data: rows, error } = await supabase
+        .from('payroll_periods')
+        .select('*')
+        .order('year')
+        .order('month')
+        .order('start_day');
+      if (error) throw error;
+      const periods = (rows || []).map(row => ({
+        id: row.id,
+        year: row.year,
+        month: row.month,
+        start_day: row.start_day,
+        end_day: row.end_day,
+        period_name: `${row.month} ${row.start_day}-${row.end_day}, ${row.year}`,
+        display_name: `${row.month} ${row.start_day}-${row.end_day}, ${row.year}`
+      }));
+      return res.json({ success: true, data: periods });
+    }
+    if (!db) throw new Error('Database not configured');
     const [rows] = await db.query(
       'SELECT * FROM payroll_periods ORDER BY year, month, start_day'
     );
-    
     const periods = rows.map(row => ({
       id: row.id,
       year: row.year,
@@ -49,58 +68,67 @@ router.get('/payroll-periods', async (req, res) => {
       period_name: `${row.month} ${row.start_day}-${row.end_day}, ${row.year}`,
       display_name: `${row.month} ${row.start_day}-${row.end_day}, ${row.year}`
     }));
-    
     res.json({ success: true, data: periods });
   } catch (error) {
     console.error('Database error:', error);
-    res.status(500).json({ 
-      success: false, 
+    res.status(500).json({
+      success: false,
       message: 'Error fetching payroll periods',
-      error: error.message 
+      error: error.message
     });
   }
 });
+
+function mapAttendanceRow(row) {
+  return {
+    id: row.id,
+    employee_id: row.employee_id,
+    payroll_period_id: row.payroll_period_id,
+    date: row.date,
+    day_index: row.day_index,
+    time_in: row.time_in,
+    time_out: row.time_out,
+    working_hours: row.working_hours != null ? parseFloat(row.working_hours) : null,
+    amount: row.amount != null ? parseFloat(row.amount) : null,
+    status: row.status,
+    is_approved: !!row.is_approved
+  };
+}
 
 // GET attendance for employee and period
 router.get('/attendance', async (req, res) => {
   try {
     const { employee_id, payroll_period_id } = req.query;
-    
     if (!employee_id || !payroll_period_id) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         success: false,
-        message: 'Missing required parameters: employee_id and payroll_period_id' 
+        message: 'Missing required parameters: employee_id and payroll_period_id'
       });
     }
-    
+    const eid = parseInt(employee_id, 10);
+    const pid = parseInt(payroll_period_id, 10);
+    if (useSupabase && supabase) {
+      const { data: rows, error } = await supabase
+        .from('attendance')
+        .select('*')
+        .eq('employee_id', eid)
+        .eq('payroll_period_id', pid)
+        .order('day_index');
+      if (error) throw error;
+      return res.json({ success: true, data: (rows || []).map(mapAttendanceRow) });
+    }
+    if (!db) throw new Error('Database not configured');
     const [rows] = await db.query(
-      `SELECT * FROM attendance 
-       WHERE employee_id = ? AND payroll_period_id = ?
-       ORDER BY day_index`,
-      [parseInt(employee_id), parseInt(payroll_period_id)]
+      `SELECT * FROM attendance WHERE employee_id = ? AND payroll_period_id = ? ORDER BY day_index`,
+      [eid, pid]
     );
-    
-    const attendance = rows.map(row => ({
-      id: row.id,
-      employee_id: row.employee_id,
-      payroll_period_id: row.payroll_period_id,
-      date: row.date,
-      day_index: row.day_index,
-      time_in: row.time_in,
-      time_out: row.time_out,
-      working_hours: row.working_hours ? parseFloat(row.working_hours) : null,
-      amount: row.amount ? parseFloat(row.amount) : null,
-      status: row.status,
-      is_approved: row.is_approved === 1
-    }));
-    
-    res.json({ success: true, data: attendance });
+    res.json({ success: true, data: rows.map(mapAttendanceRow) });
   } catch (error) {
     console.error('Database error:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       success: false,
       message: 'Error fetching attendance',
-      error: error.message 
+      error: error.message
     });
   }
 });
