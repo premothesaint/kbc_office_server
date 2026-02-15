@@ -1,10 +1,30 @@
-const db = require('../config/database');
+const supabase = require('../config/supabase');
+let db = null;
+try { db = require('../config/database'); } catch (e) {}
+
+const MONTH_ORDER = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+
+function sortPeriods(periods) {
+  return (periods || []).slice().sort((a, b) => {
+    if (a.year !== b.year) return b.year - a.year;
+    const ma = MONTH_ORDER.indexOf(a.month);
+    const mb = MONTH_ORDER.indexOf(b.month);
+    if (ma !== mb) return ma - mb;
+    return (a.start_day || 0) - (b.start_day || 0);
+  });
+}
 
 class PayrollController {
   // ==================== PAYROLL PERIODS ====================
-  
+
   async getPayrollPeriods(req, res) {
     try {
+      if (supabase) {
+        const { data, error } = await supabase.from('payroll_periods').select('*');
+        if (error) throw error;
+        return res.json(sortPeriods(data));
+      }
+      if (!db) return res.status(503).json({ error: 'Database not configured' });
       const [periods] = await db.query(`
         SELECT * FROM payroll_periods 
         ORDER BY year DESC, 
@@ -12,7 +32,6 @@ class PayrollController {
                 'July', 'August', 'September', 'October', 'November', 'December'), 
           start_day
       `);
-      
       res.json(periods);
     } catch (error) {
       console.error('Error fetching payroll periods:', error);
@@ -23,22 +42,30 @@ class PayrollController {
   async getCurrentPayrollPeriod(req, res) {
     try {
       const now = new Date();
-      const year = req.query.year || now.getFullYear();
+      const year = parseInt(req.query.year || now.getFullYear(), 10);
       const month = req.query.month || now.toLocaleString('default', { month: 'long' });
-      const day = req.query.day || now.getDate();
-      
+      const day = parseInt(req.query.day || now.getDate(), 10);
+      if (supabase) {
+        const { data, error } = await supabase
+          .from('payroll_periods')
+          .select('*')
+          .eq('year', year)
+          .eq('month', month)
+          .lte('start_day', day)
+          .gte('end_day', day);
+        if (error) throw error;
+        const period = (data && data.length > 0) ? data[0] : null;
+        if (!period) return res.status(404).json({ error: 'No payroll period found for current date' });
+        return res.json(period);
+      }
+      if (!db) return res.status(503).json({ error: 'Database not configured' });
       const [periods] = await db.query(`
         SELECT * FROM payroll_periods 
-        WHERE year = ? 
-          AND month = ? 
-          AND ? BETWEEN start_day AND end_day
-        LIMIT 1
+        WHERE year = ? AND month = ? AND ? BETWEEN start_day AND end_day LIMIT 1
       `, [year, month, day]);
-      
       if (periods.length === 0) {
         return res.status(404).json({ error: 'No payroll period found for current date' });
       }
-      
       res.json(periods[0]);
     } catch (error) {
       console.error('Error fetching current payroll period:', error);
@@ -48,16 +75,22 @@ class PayrollController {
 
   async getPayrollPeriodById(req, res) {
     try {
-      const { periodId } = req.params;
-      const [periods] = await db.query(
-        'SELECT * FROM payroll_periods WHERE id = ?',
-        [periodId]
-      );
-      
+      const periodId = req.params.periodId;
+      if (supabase) {
+        const { data, error } = await supabase
+          .from('payroll_periods')
+          .select('*')
+          .eq('id', periodId)
+          .maybeSingle();
+        if (error) throw error;
+        if (!data) return res.status(404).json({ error: 'Payroll period not found' });
+        return res.json(data);
+      }
+      if (!db) return res.status(503).json({ error: 'Database not configured' });
+      const [periods] = await db.query('SELECT * FROM payroll_periods WHERE id = ?', [periodId]);
       if (periods.length === 0) {
         return res.status(404).json({ error: 'Payroll period not found' });
       }
-      
       res.json(periods[0]);
     } catch (error) {
       console.error('Error fetching payroll period:', error);
