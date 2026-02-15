@@ -4,15 +4,21 @@
     {
       "src": "index.js",
       "use": "@vercel/node",
-      "config": { "includeFiles": ["**"] }
+      "config": {
+        "includeFiles": ["**"]
+      }
     }
   ],
   "routes": [
-    {
-      "src": "/api/(.*)",
-      "dest": "index.js"
-    }
+    { "src": "/", "dest": "/index.js" },
+    { "src": "/api", "dest": "/index.js" },
+    { "src": "/api/(.*)", "dest": "/index.js" }
   ],
+  "functions": {
+    "index.js": {
+      "maxDuration": 30
+    }
+  },
   "env": {
     "NODE_ENV": "production"
   }

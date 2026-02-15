@@ -49,6 +49,16 @@ app.use((req, res, next) => {
   next();
 });
 
+// Fast response for root (so server URL doesn't hang on Vercel)
+app.get('/', (req, res) => {
+  res.json({
+    message: 'KBC Office API',
+    docs: '/api',
+    health: '/api/health',
+    ping: '/api/ping'
+  });
+});
+
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/payroll', payrollRoutes);
@@ -93,14 +103,21 @@ app.get('/api', (req, res) => {
 });
 
 app.get(['/health', '/api/health'], async (req, res) => {
+  const timeoutMs = Number(process.env.HEALTH_DB_TIMEOUT) || 5000;
+  let dbStatus = { connected: false, essentialTables: null };
   try {
     const supabase = require('./config/supabase');
-    let dbStatus = { connected: false, essentialTables: null };
     if (supabase) {
-      const { data, error } = await supabase
-        .from('users')
-        .select('id')
-        .limit(1);
+      const withTimeout = (promise, ms) => {
+        return new Promise((resolve, reject) => {
+          const t = setTimeout(() => reject(new Error('DB timeout')), ms);
+          promise.then((v) => { clearTimeout(t); resolve(v); }).catch((e) => { clearTimeout(t); reject(e); });
+        });
+      };
+      const { error } = await withTimeout(
+        supabase.from('users').select('id').limit(1),
+        timeoutMs
+      );
       if (!error) dbStatus.connected = true;
     } else {
       const db = require('./config/database');
@@ -110,29 +127,23 @@ app.get(['/health', '/api/health'], async (req, res) => {
           promise.then((v) => { clearTimeout(t); resolve(v); }).catch((e) => { clearTimeout(t); reject(e); });
         });
       };
-      await withTimeout(db.query('SELECT 1'), Number(process.env.HEALTH_DB_TIMEOUT) || 3000);
+      await withTimeout(db.query('SELECT 1'), timeoutMs);
       dbStatus.connected = true;
     }
-    res.json({
-      status: 'OK',
-      message: 'KBC Office Server is running',
-      timestamp: new Date().toISOString(),
-      database: {
-        connected: dbStatus.connected,
-        essentialTables: dbStatus.essentialTables
-      },
-      uptime: process.uptime(),
-      memory: process.memoryUsage()
-    });
   } catch (error) {
-    console.error('Health check failed:', error);
-    res.status(500).json({
-      status: 'ERROR',
-      message: 'Database connection failed',
-      error: error.message,
-      timestamp: new Date().toISOString()
-    });
+    console.error('Health check DB failed:', error.message);
   }
+  res.json({
+    status: 'OK',
+    message: 'KBC Office Server is running',
+    timestamp: new Date().toISOString(),
+    database: {
+      connected: dbStatus.connected,
+      essentialTables: dbStatus.essentialTables
+    },
+    uptime: process.uptime(),
+    memory: process.memoryUsage()
+  });
 });
 
 app.options('*', cors());
